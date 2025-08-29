@@ -1,3 +1,5 @@
+# utilities/inferenceUtils.py
+
 import torch
 import torch.nn as nn
 import torchvision
@@ -13,13 +15,12 @@ import cv2
 from PIL import Image
 from dataTools.dataNormalization import *
 from PIL import ImageFile
-# ⚠️ 1. 학습 때 사용했던 불량 화소 생성기를 가져옵니다.
 from dataTools.badPixelGenerator import generate_bad_pixels 
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
+# (AddGaussianNoise 클래스는 변경 없이 그대로 둡니다)
 class AddGaussianNoise(object):
-    # 이 클래스는 더 이상 사용되지 않지만, 다른 곳에서 호출할 수 있으므로 그대로 둡니다.
     def __init__(self, noiseLevel):
         self.var = 0.1
         self.mean = 0.0
@@ -38,53 +39,82 @@ class AddGaussianNoise(object):
 
 class inference():
     def __init__(self, gridSize, inputRootDir, outputRootDir, modelName, validation=None, inferenceMode=2):
-        self.gridSize = gridSize # Demosaic 모드 구분을 위해 사용
+        self.gridSize = gridSize
         self.inputRootDir = inputRootDir
         self.outputRootDir = outputRootDir
         self.modelName = modelName
         self.validation = validation
         self.unNormalize = UnNormalize()
         self.inferenceMode = inferenceMode
+        
+        # ========================================================== #
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ 핵심 수정 사항 1 ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ #
+        # ---------------------------------------------------------- #
+        # 불량 화소가 추가된 입력 이미지를 저장할 경로를 미리 정의합니다.
+        # ========================================================== #
+        self.defectiveInputPath = os.path.join(self.outputRootDir, "defective_inputs")
+        os.makedirs(self.defectiveInputPath, exist_ok=True)
+
 
     def inputForInference(self, imagePath, noiseLevel):
         source_image_pil = Image.open(imagePath).convert("RGB")
 
-        # --- Demosaic 모드 (gridSize == -1) 처리 ---
-        if self.gridSize == -1:
-            print("Mode 3 (Demosaicing): Treating input as clean Quad Bayer.")
+        if self.inferenceMode == 1:
+            print("Mode 1: Treating input as already defective.")
             img = source_image_pil
-        # --- BP Correction 모드 처리 ---
+            
+        elif self.inferenceMode == 2:
+            print("Mode 2: Applying bad pixels to clean input.")
+            source_image_np = np.array(source_image_pil)
+            corrupted_image_np = generate_bad_pixels(source_image_np)
+            img = Image.fromarray(corrupted_image_np)
+
+            # ========================================================== #
+            # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ 핵심 수정 사항 2 ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ #
+            # ---------------------------------------------------------- #
+            # 모델에 입력되기 직전의, 불량 화소가 추가된 이미지를 파일로 저장합니다.
+            # ========================================================== #
+            datasetName = os.path.basename(os.path.dirname(imagePath))
+            save_dir = os.path.join(self.defectiveInputPath, self.modelName, datasetName)
+            os.makedirs(save_dir, exist_ok=True)
+            
+            defective_filename = f"{extractFileName(imagePath, True)}_defective_input.png"
+            defective_save_path = os.path.join(save_dir, defective_filename)
+            img.save(defective_save_path)
+            
         else:
-            if self.inferenceMode == 1:
-                print("Mode 1: Treating input as already defective.")
-                img = source_image_pil
-            elif self.inferenceMode == 2:
-                print("Mode 2: Applying bad pixels to clean input.")
-                source_image_np = np.array(source_image_pil)
-                corrupted_image_np = generate_bad_pixels(source_image_np)
-                img = Image.fromarray(corrupted_image_np)
-            else:
-                raise ValueError(f"Invalid inferenceMode: {self.inferenceMode}")
+            raise ValueError(f"Invalid inferenceMode: {self.inferenceMode}")
 
         # 텐서 변환 및 정규화
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(normMean, normStd)
+            # 참고: MultiStream 모델은 dataloader에서 채널별로 정규화를 진행했으므로,
+            # BJDD.py에서 추론 시에도 동일하게 채널 분리 후 정규화를 적용해야 합니다.
+            # 여기서는 우선 텐서로만 변환합니다.
         ])
-        testImg = transform(img).unsqueeze(0)
-        return testImg
+        
+        # 정규화는 BJDD.py에서 채널 분리 후 직접 수행합니다.
+        img_tensor = transform(img)
+        normalized_tensor = (img_tensor * 2) - 1 # 0~1 범위를 -1~1 범위로 변경
+
+        return normalized_tensor.unsqueeze(0)
 
 
     def saveModelOutput(self, modelOutput, inputImagePath, noiseLevel, step = None, ext = ".png"):
         datasetName = os.path.basename(os.path.dirname(inputImagePath))
-        if step:
-            imageSavingPath = os.path.join(self.outputRootDir, self.modelName, datasetName, f"{extractFileName(inputImagePath, True)}_sigma_{noiseLevel}_{self.modelName}_{step}{ext}")
-        else:
-            imageSavingPath = os.path.join(self.outputRootDir, self.modelName, datasetName, f"{extractFileName(inputImagePath, True)}_sigma_{noiseLevel}_{self.modelName}{ext}")
         
-        os.makedirs(os.path.dirname(imageSavingPath), exist_ok=True)
+        # 저장 경로를 결과(output) 폴더로 명확히 합니다.
+        save_dir = os.path.join(self.outputRootDir, self.modelName, datasetName)
+        os.makedirs(save_dir, exist_ok=True)
+
+        if step:
+            imageSavingPath = os.path.join(save_dir, f"{extractFileName(inputImagePath, True)}_corrected_sigma_{noiseLevel}_{self.modelName}_{step}{ext}")
+        else:
+            imageSavingPath = os.path.join(save_dir, f"{extractFileName(inputImagePath, True)}_corrected_sigma_{noiseLevel}_{self.modelName}{ext}")
+        
         save_image(self.unNormalize(modelOutput[0]), imageSavingPath)
 
+    # (testingSetProcessor 함수는 변경 없음)
     def testingSetProcessor(self):
         testSets = glob.glob(os.path.join(self.inputRootDir, '*/'))
         if not testSets: 
@@ -96,7 +126,9 @@ class inference():
         testImageList = []
         for t in testSets:
             testSetName = os.path.basename(os.path.normpath(t))
+            # 결과(output) 폴더와 불량화소 입력(defective_input) 폴더를 모두 생성합니다.
             createDir(os.path.join(self.outputRootDir, self.modelName, testSetName))
+            createDir(os.path.join(self.defectiveInputPath, self.modelName, testSetName))
             imgInTargetDir = imageList(t, False)
             testImageList.extend(imgInTargetDir)
             
