@@ -24,7 +24,7 @@ from loss.colorLoss import ColorLoss
 from loss.percetualLoss import regularizedFeatureLoss
 from loss.pytorch_msssim import MSSSIM
 
-from modelDefinitions.unet_transformer_gen import UNetTransformer
+from modelDefinitions.unet_transformer_gen import MultiStreamUNetTransformer
 from modelDefinitions.attentionDis import attentiomDiscriminator
 
 from torchvision.utils import save_image
@@ -59,7 +59,7 @@ class BJDD:
         self.noiseSet = [0, 5, 10]
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-        self.generator     = UNetTransformer(n_channels=self.inputC, n_classes=self.outputC).to(self.device)
+        self.generator     = MultiStreamUNetTransformer(n_classes=self.outputC).to(self.device)
         self.discriminator = attentiomDiscriminator().to(self.device)
 
         self.optimizerG = torch.optim.Adam(self.generator.parameters(), lr=self.learningRate, betas=(self.adamBeta1, self.adamBeta2))
@@ -83,8 +83,6 @@ class BJDD:
         if dataSamples:
             self.dataSamples = dataSamples
 
-        # ✅ [수정] reconstructionLoss를 사용하지 않고 직접 가중 L1 손실을 계산합니다.
-        # reconstructionLoss = torch.nn.L1Loss().to(self.device) 
         featureLoss        = regularizedFeatureLoss().to(self.device)
         colorLoss          = ColorLoss().to(self.device)
         adversarialLoss    = nn.BCEWithLogitsLoss().to(self.device)
@@ -106,13 +104,15 @@ class BJDD:
         currentStep = self.startSteps
 
         while currentStep < self.totalSteps:
-            # ✅ [수정] 데이터 로더에서 mask_tensor를 추가로 받습니다.
-            for i, (inputImages, gtImages, mask_tensors) in enumerate(trainingImageLoader):
+            for i, (inputImages, r_plane, g_plane, b_plane, gtImages, mask_tensors) in enumerate(trainingImageLoader):
                 currentStep += 1
                 if currentStep > self.totalSteps:
                     break
 
                 input_real = inputImages.to(self.device)
+                r_plane_real = r_plane.to(self.device)
+                g_plane_real = g_plane.to(self.device)
+                b_plane_real = b_plane.to(self.device)
                 gt_real    = gtImages.to(self.device)
                 mask       = mask_tensors.to(self.device) # 마스크도 GPU로 이동
 
@@ -123,7 +123,7 @@ class BJDD:
 
                 # ====== 1) Update Discriminator ======
                 self.optimizerD.zero_grad()
-                generated_fake = self.generator(input_real)
+                generated_fake = self.generator(r_plane_real, g_plane_real, b_plane_real)
                 lossD_real = adversarialLoss(self.discriminator(gt_real), target_real_label)
                 lossD_fake = adversarialLoss(self.discriminator(generated_fake.detach()), target_fake_label)
                 lossD = lossD_real + lossD_fake
@@ -132,25 +132,22 @@ class BJDD:
 
                 # ====== 2) Update Generator ======
                 self.optimizerG.zero_grad()
+                generated_fake_for_g = self.generator(r_plane_real, g_plane_real, b_plane_real)
 
-                # ✅ [수정] 가중 L1 손실 계산
-                # 손상된 픽셀(mask=1)에는 가중치 1.0, 정상 픽셀(mask=0)에는 가중치 2.0 부여
-                weight = torch.ones_like(mask) * 2.0 # 기본 가중치 2.0
-                weight[mask == 1] = 1.0 # 손상된 부분은 1.0
+                weight = torch.ones_like(mask) * 2.0
+                weight[mask == 1] = 1.0
                 
-                # 가중치를 적용한 L1 손실 계산
-                lossG_L1_weighted = (weight * torch.abs(generated_fake - gt_real)).mean()
+                lossG_L1_weighted = (weight * torch.abs(generated_fake_for_g - gt_real)).mean()
 
-                # ✅ [수정] 최종 Generator 손실 계산 시 기존 L1 대신 가중 L1 손실 사용
                 lossG_content = lossG_L1_weighted \
-                              + featureLoss(generated_fake, gt_real) \
-                              + colorLoss(generated_fake,  gt_real)
+                              + featureLoss(generated_fake_for_g, gt_real) \
+                              + colorLoss(generated_fake_for_g,  gt_real)
 
-                ms_ssim_val = ssimLoss(generated_fake, gt_real)
+                ms_ssim_val = ssimLoss(generated_fake_for_g, gt_real)
                 loss_ssim   = 1.0 - ms_ssim_val
                 lossG_content = lossG_content + lambda_ssim * loss_ssim
 
-                lossG_adv = adversarialLoss(self.discriminator(generated_fake), target_ones_label)
+                lossG_adv = adversarialLoss(self.discriminator(generated_fake_for_g), target_ones_label)
                 lossG = lossG_content + 1e-3 * lossG_adv
                 lossG.backward()
                 self.optimizerG.step()
@@ -158,7 +155,7 @@ class BJDD:
                 if (currentStep + 1) % self.interval == 0:
                     summaryInfo = {
                         'Input Images':     self.unNorm(input_real),
-                        'Generated Images': self.unNorm(generated_fake),
+                        'Generated Images': self.unNorm(generated_fake_for_g),
                         'GT Images':        self.unNorm(gt_real),
                         'Step':             currentStep + 1,
                         'Epoch':            self.currentEpoch,
@@ -191,21 +188,28 @@ class BJDD:
         with torch.no_grad():
             for noise in finalNoiseSet:
                 for imgPath in testImageList:
-                    img = modelInference.inputForInference(imgPath, noiseLevel=noise).to(self.device)
-                    out = self.generator(img)
+                    img_3ch = modelInference.inputForInference(imgPath, noiseLevel=noise).to(self.device)
+                    
+                    r_plane = img_3ch[:, 0, :, :].unsqueeze(1)
+                    g_plane = img_3ch[:, 1, :, :].unsqueeze(1)
+                    b_plane = img_3ch[:, 2, :, :].unsqueeze(1)
+
+                    out = self.generator(r_plane, g_plane, b_plane)
                     modelInference.saveModelOutput(out, imgPath, noise, steps)
         print("\nInference completed!")
 
     def modelSummary(self, input_size=None):
         if not input_size:
-            input_size = (self.inputC, self.imageH, self.imageW)
+            input_size = (1, self.imageH, self.imageW)
 
-        customPrint(Fore.YELLOW + "Generator (U-Net Transformer)", textWidth=self.barLen)
-        summary(self.generator, input_size=input_size)
+        customPrint(Fore.YELLOW + "Generator (Multi-Stream UNet Transformer)", textWidth=self.barLen)
+        print(self.generator)
+        total_params = sum(p.numel() for p in self.generator.parameters() if p.requires_grad)
+        print(f"Generator Trainable Parameters: {total_params:,}")
         print("*" * self.barLen); print()
 
         customPrint(Fore.YELLOW + "Discriminator", textWidth=self.barLen)
-        summary(self.discriminator, input_size=input_size)
+        summary(self.discriminator, input_size=(self.inputC, self.imageH, self.imageW))
         print("*" * self.barLen); print()
         try:
             configShower()
