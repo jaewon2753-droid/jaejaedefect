@@ -1,0 +1,23 @@
+{
+	"gtPath": "/content/drive/MyDrive/def_correct/quad128/",
+	"targetPath": "/content/drive/MyDrive/def_correct/quad128/",
+	"checkpointPath": "./weights_bp/",
+	"testImagePath": "./testingImages/",
+	"resultDir": "./content/drive/MyDrive/def_correct/modelOutput_bp_model_128_v1/",
+	"logPath": "./logDir_bp_model_128_v1/",
+	"modelName": "BadPixel_UNetTransformer",
+	"dataSamples": null,
+	"batchSize": 32,
+	"barLen": "64",
+	"interval": "100",
+	"imageH": "128",
+	"imageW": "128",
+	"inputC": "3",
+	"outputC": "3",
+	"scalingFactor": "1",
+	"binningFactor": 2,
+	"epoch": 50,
+	"learningRate": "0.0005",
+	"adamBeta1": "0.9",
+	"adamBeta2": "0.99"
+}
