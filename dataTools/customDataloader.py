@@ -1,3 +1,5 @@
+# dataTools/customDataloader.py
+
 import glob
 import numpy as np
 import time
@@ -9,7 +11,7 @@ from utilities.customUtils import *
 from dataTools.dataNormalization import *
 from dataTools.badPixelGenerator import generate_bad_pixels
 import os
-import torch  # ✅ [해결] 이 줄을 추가하여 오류를 해결합니다.
+import torch
 
 class customDatasetReader(Dataset):
     def __init__(self, image_list, imagePathGT, height, width, transformation=True):
@@ -19,14 +21,8 @@ class customDatasetReader(Dataset):
         self.imageW = width
         normalize = transforms.Normalize(normMean, normStd)
 
-        self.transformHRGT = transforms.Compose([
-            transforms.ToTensor(),
-            normalize,
-        ])
-        self.transformRI = transforms.Compose([
-            transforms.ToTensor(),
-            normalize,
-        ])
+        # 변환기는 텐서 변환만 수행하고, 정규화는 각 채널 분리 후 진행합니다.
+        self.transform_to_tensor = transforms.ToTensor()
 
     def __len__(self):
         return len(self.image_list)
@@ -41,19 +37,32 @@ class customDatasetReader(Dataset):
 
         # 2) 불량 화소 생성 및 마스크 준비
         gt_image_np = np.array(gt_image_pil)
-        
-        # 원본과 복사본을 만들어 마스크 생성
         input_image_np = generate_bad_pixels(gt_image_np.copy())
-        
-        # 픽셀값이 다른 부분을 찾아 마스크 생성 (True/False)
         mask = (gt_image_np != input_image_np).any(axis=-1)
-        mask_tensor = torch.from_numpy(mask).float().unsqueeze(0) # (1, H, W) 형태로 변환
-
+        mask_tensor = torch.from_numpy(mask).float().unsqueeze(0)
         input_image_pil = Image.fromarray(input_image_np)
 
-        # 3) 변환 적용
-        input_tensor = self.transformRI(input_image_pil)
-        gt_tensor = self.transformHRGT(gt_image_pil)
+        # 3) 텐서로 변환
+        input_tensor_3ch = self.transform_to_tensor(input_image_pil)
+        gt_tensor_3ch = self.transform_to_tensor(gt_image_pil)
 
-        # 4) 마스크 텐서를 추가로 반환
-        return input_tensor, gt_tensor, mask_tensor
+        # ========================================================== #
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ 핵심 수정 사항 ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ #
+        # ---------------------------------------------------------- #
+        # 4) R, G, B 채널을 분리하고 각각 정규화를 적용합니다.
+        # ========================================================== #
+        def normalize_channel(channel_tensor):
+            # 각 채널(0~1)을 -1~1 범위로 정규화
+            return (channel_tensor * 2) - 1
+
+        # 입력 이미지 채널 분리
+        r_plane = normalize_channel(input_tensor_3ch[0, :, :].unsqueeze(0))
+        g_plane = normalize_channel(input_tensor_3ch[1, :, :].unsqueeze(0))
+        b_plane = normalize_channel(input_tensor_3ch[2, :, :].unsqueeze(0))
+        
+        # 정규화된 3채널 텐서도 반환
+        input_tensor_normalized = torch.cat([r_plane, g_plane, b_plane], dim=0)
+        gt_tensor_normalized = normalize_channel(gt_tensor_3ch)
+
+        # 5) 모델 학습에 필요한 모든 텐서를 반환합니다.
+        return input_tensor_normalized, r_plane, g_plane, b_plane, gt_tensor_normalized, mask_tensor
