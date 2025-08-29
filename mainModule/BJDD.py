@@ -24,8 +24,8 @@ from loss.colorLoss import ColorLoss
 from loss.percetualLoss import regularizedFeatureLoss
 from loss.pytorch_msssim import MSSSIM
 
-from modelDefinitions.unet_transformer_gen import MultiStreamUNetTransformer
-from modelDefinitions.attentionDis import attentiomDiscriminator
+from modelDefinition.unet_transformer_gen import MultiStreamUNetTransformer
+from modelDefinition.attentionDis import attentiomDiscriminator
 
 from torchvision.utils import save_image
 
@@ -238,3 +238,4 @@ class BJDD:
         self.optimizerD.load_state_dict(previousWeight['optimizerD'])
         self.startSteps = int(previousWeight['step'])
         customPrint(Fore.YELLOW + "Weight loaded successfully", textWidth=self.barLen)
+
