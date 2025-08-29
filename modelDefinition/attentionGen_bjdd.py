@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from torchsummary import summary
-from modelDefinitions.basicBlocks import *    
+from modelDefinition.basicBlocks import *    
 
 class attentionNet(nn.Module):
     def __init__(self, squeezeFilters = 64, expandFilters = 64, depth = 3):
