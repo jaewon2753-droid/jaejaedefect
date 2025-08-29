@@ -4,7 +4,7 @@ import torch
 from torchsummary import summary
 import torchvision.models as models
 from torchvision.models import vgg19
-from modelDefinitions.basicBlocks import *  # 이 줄은 그대로 둡니다.
+from modelDefinition.basicBlocks import *  # 이 줄은 그대로 둡니다.
 import torch.nn.init as init
 
 def swish(x):
