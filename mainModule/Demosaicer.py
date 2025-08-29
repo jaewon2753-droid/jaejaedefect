@@ -10,7 +10,7 @@ from utilities.inferenceUtils import inference
 # UNetTransformer 대신, Demosaicing을 위한 attentionNet 모델을
 # attentionGen_bjdd.py 파일에서 정확하게 불러옵니다.
 # ========================================================== #
-from modelDefinitions.attentionGen_bjdd import attentionNet
+from modelDefinition.attentionGen_bjdd import attentionNet
 
 class Demosaicer:
     def __init__(self, config):
